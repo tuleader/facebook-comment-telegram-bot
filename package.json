@@ -1,0 +1,15 @@
+{
+  "name": "facebook-comment-telegram-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dockerized Telegram bot to save Facebook cookie/token, crawl all comments, and export to Google Sheets.",
+  "type": "commonjs",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js",
+    "check": "node --check src/*.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

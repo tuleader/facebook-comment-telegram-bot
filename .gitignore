@@ -1,0 +1,10 @@
+.env
+data/*
+!data/.gitkeep
+state/*
+!state/.gitkeep
+node_modules/
+npm-debug.log*
+.DS_Store
+data/
+state/
