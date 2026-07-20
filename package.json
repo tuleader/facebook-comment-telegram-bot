@@ -1,15 +1,18 @@
 {
   "name": "facebook-comment-telegram-bot",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Dockerized Telegram bot to save Facebook cookie/token, crawl all comments, and export to Google Sheets.",
+  "description": "Dockerized Telegram bot to save Facebook cookie/token, crawl all comments, and export to Google Sheets. Auto token refresh via Chromium headless.",
   "type": "commonjs",
   "main": "src/bot.js",
   "scripts": {
     "start": "node src/bot.js",
-    "check": "node --check src/*.js"
+    "check": "node --check src/*.js src/scripts/*.js"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "puppeteer-core": "^24.8.2"
   }
 }

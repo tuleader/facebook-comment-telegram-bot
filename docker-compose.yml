@@ -8,3 +8,5 @@ services:
     volumes:
       - ./data:/data
       - ./state:/state
+    # Chromium headless cần shared memory lớn hơn default 64MB
+    shm_size: 1gb

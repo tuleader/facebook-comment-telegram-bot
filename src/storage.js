@@ -108,10 +108,17 @@ function saveToken(rawToken) {
   return { tokenLength: token.length, tokenPrefix: token.slice(0, 8), backup };
 }
 
-function getToken() {
-  if (!fs.existsSync(TOKEN_PATH)) throw new Error('Chưa có token. Gửi: fb lưu token <TOKEN>');
+function getToken(options = {}) {
+  const allowEmpty = typeof options === 'object' && options !== null ? options.allowEmpty : false;
+  if (!fs.existsSync(TOKEN_PATH)) {
+    if (allowEmpty) return null;
+    throw new Error('Chưa có token. Hãy gửi update_cookies để bot tự lấy token.');
+  }
   const token = fs.readFileSync(TOKEN_PATH, 'utf8').trim();
-  if (token.length < 40) throw new Error('Token đang lưu quá ngắn hoặc không hợp lệ.');
+  if (token.length < 40) {
+    if (allowEmpty) return null;
+    throw new Error('Token đang lưu quá ngắn hoặc không hợp lệ.');
+  }
   return token;
 }
 

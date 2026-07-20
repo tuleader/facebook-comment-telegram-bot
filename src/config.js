@@ -18,4 +18,5 @@ module.exports = {
   SHEETS_FOLDER_ID: process.env.SHEETS_FOLDER_ID || process.env.GOOGLE_FOLDER_ID || '',
   EXPORT_CHUNK_SIZE: Number(process.env.EXPORT_CHUNK_SIZE || '1000'),
   EXPORT_DELAY_MS: Number(process.env.EXPORT_DELAY_MS || '600'),
+  AUTO_TOKEN_REFRESH: process.env.AUTO_TOKEN_REFRESH !== 'false',
 };

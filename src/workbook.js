@@ -24,7 +24,7 @@ function topSheetName(topLimit) {
 function buildInteractionRows(comments, ownerId) {
   const stats = new Map();
   for (const c of comments || []) {
-    if (!c.authorId || (ownerId && c.authorId === ownerId)) continue;
+    if (!c.authorId || (ownerId && String(c.authorId) === String(ownerId))) continue;
     const st = stats.get(c.authorId) || { authorId: c.authorId, author: c.author || '', totalInteractions: 0 };
     if (c.author && !st.author) st.author = c.author;
     st.totalInteractions += 1;
@@ -43,18 +43,22 @@ function buildInteractionRows(comments, ownerId) {
 function buildWorkbook({ commentsResult, postInfo, sourceUrl, topLimit = null }) {
   const postId = commentsResult.sourcePostId;
   const ownerId = postInfo && postInfo.from && postInfo.from.id || '';
-  const title = compactTitle(postInfo?.description || postInfo?.title || postInfo?.message || sourceUrl || postId);
-  const commentHeaders = ['Thời gian', 'Tên FB', 'ID', 'Nội dung', 'ID_Comment', 'Link_Comment', 'Link_Profile'];
+  const title = compactTitle(postInfo?.message || postInfo?.description || postInfo?.title || sourceUrl || postId);
+  const postLink = postInfo?.permalink_url || sourceUrl || '';
+  const commentHeaders = ['Thời gian', 'Tên FB', 'Loại bình luận', 'ID', 'Nội dung', 'ID_Comment', 'ID_Parent', 'Link_Comment', 'Link_Profile', 'Link bài viết'];
   const interactionHeaders = ['Tên FB', 'Điểm TT', 'Link_Profile'];
 
   const commentRows = (commentsResult.comments || []).map(c => ({
     'Thời gian': formatDate(c.createdTime),
     'Tên FB': c.author || '',
+    'Loại bình luận': c.depth > 0 ? 'Trả lời' : 'Bình luận',
     'ID': c.authorId || '',
     'Nội dung': c.text || '',
     'ID_Comment': c.commentId || '',
+    'ID_Parent': c.parentCommentId || '',
     'Link_Comment': commentUrl(c.commentId),
     'Link_Profile': profileUrl(c.authorId),
+    'Link bài viết': postLink,
   }));
 
   // Mặc định tab tương tác phải chứa TẤT CẢ user, đã xếp cao -> thấp.

@@ -1,12 +1,22 @@
 const fs = require('fs');
 const path = require('path');
-const { STATE_DIR, FB_API_VERSION, DEFAULT_LIMIT, DEFAULT_DELAY_MS } = require('./config');
+const { STATE_DIR, FB_API_VERSION, DEFAULT_LIMIT, DEFAULT_DELAY_MS, AUTO_TOKEN_REFRESH } = require('./config');
 const { getCookieHeader, getToken } = require('./storage');
+const { resolveFacebookSource, resolveFacebookInput } = require('./sourceResolver');
+const { ensureFreshToken } = require('./tokenHelper');
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function safeName(s) { return String(s || '').replace(/[^a-zA-Z0-9_.-]+/g, '_').slice(0, 120); }
 
+/**
+ * Extract a Graph-API-usable post ID from any Facebook input (URL, ID, pfbid).
+ * Offline-only version — no network requests. Suitable for quick parsing.
+ */
 function extractPostId(input) {
+  const resolved = resolveFacebookSource(input);
+  if (resolved.ok) return resolved.targetId;
+
+  // Fallback: legacy regex extraction
   const raw = String(input || '').trim();
   if (/^\d{8,}$/.test(raw)) return raw;
   let url;
@@ -30,6 +40,14 @@ function extractPostId(input) {
   throw new Error('Không tìm được postId từ link Facebook.');
 }
 
+/**
+ * Resolve Facebook input with network requests (for pfbid & share URLs).
+ * Returns { ok, sourceType, targetId, canonicalUrl, inputKind, reason }.
+ */
+async function resolveInput(input) {
+  return resolveFacebookInput(input);
+}
+
 function buildUrl(edgeOrUrl, token, fields, limit, apiVersion) {
   const url = edgeOrUrl.startsWith('http')
     ? new URL(edgeOrUrl)
@@ -48,29 +66,94 @@ function buildUrl(edgeOrUrl, token, fields, limit, apiVersion) {
   return url;
 }
 
-async function graphGet(edgeOrUrl, token, cookieHeader, fields, limit, apiVersion) {
-  const url = buildUrl(edgeOrUrl, token, fields, limit, apiVersion);
-  const res = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      Cookie: cookieHeader,
-      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-      Accept: 'application/json, text/plain, */*',
-      'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
-      Origin: 'https://developers.facebook.com',
-      Referer: 'https://developers.facebook.com/tools/explorer/',
-    },
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = { raw: text }; }
-  if (data && data.error) {
-    const err = new Error(data.error.message || 'Facebook API error');
-    err.facebookError = data.error;
-    err.httpStatus = res.status;
-    throw err;
+/**
+ * Classify a Facebook API error for better user-facing messages.
+ */
+function classifyFbError(error) {
+  if (error.isCheckpoint) return { type: 'checkpoint', message: error.message };
+  const fbErr = error.facebookError || {};
+  const code = fbErr.code;
+  if (code === 368) return { type: 'rate_limit', message: 'Bị rate limit (dùng quá nhanh). Đợi vài phút rồi thử lại.' };
+  if (code === 190) return { type: 'token_expired', message: 'Token đã hết hạn. Gửi update_cookies hoặc refresh_token để bot lấy lại token.' };
+  if (code === 102) return { type: 'token_invalid', message: 'Token không hợp lệ. Gửi update_cookies hoặc refresh_token để bot lấy lại token.' };
+  if (code === 100) return { type: 'invalid_param', message: `Tham số không hợp lệ: ${fbErr.message || 'unknown'}` };
+  if (error.httpStatus === 400) return { type: 'token_expired', message: 'HTTP 400 – token có thể đã hết hạn. Gửi refresh_token hoặc update_cookies.' };
+  if (error.httpStatus === 401) return { type: 'unauthorized', message: 'Không có quyền truy cập. Kiểm tra lại cookies/tài khoản.' };
+  if (error.httpStatus === 429) return { type: 'rate_limit', message: 'HTTP 429 – rate limited. Đợi rồi thử lại.' };
+  return { type: 'unknown', message: fbErr.message || error.message || 'Lỗi không xác định.' };
+}
+
+async function getActiveToken({ onProgress, forceRefresh = false } = {}) {
+  let token = null;
+  if (!forceRefresh) {
+    try { token = getToken({ allowEmpty: true }); } catch (_) {}
   }
-  return data;
+  if (token && token.length >= 40) return token;
+
+  if (AUTO_TOKEN_REFRESH) {
+    console.log('[getActiveToken] No token found or forceRefresh requested, auto-extracting via Chromium...');
+    return await ensureFreshToken({ forceRefresh: true, onProgress });
+  }
+
+  throw new Error('Chưa có token Facebook. Hãy gửi update_cookies để bot tự lấy token.');
+}
+
+async function graphGet(edgeOrUrl, token, cookieHeader, fields, limit, apiVersion, options = {}) {
+  const attemptGet = async (tokenToUse) => {
+    const url = buildUrl(edgeOrUrl, tokenToUse, fields, limit, apiVersion);
+    const res = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: cookieHeader,
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+        Accept: 'application/json, text/plain, */*',
+        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+        Origin: 'https://developers.facebook.com',
+        Referer: 'https://developers.facebook.com/tools/explorer/',
+      },
+    });
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+    if (data && data.error) {
+      const err = new Error(data.error.message || 'Facebook API error');
+      err.facebookError = data.error;
+      err.httpStatus = res.status;
+      throw err;
+    }
+    return data;
+  };
+
+  try {
+    return await attemptGet(token);
+  } catch (error) {
+    // Auto-retry & auto-refresh: re-read token from file or trigger Chromium extraction
+    const isTokenError =
+      (error.facebookError && (error.facebookError.code === 190 || error.facebookError.code === 102)) ||
+      error.httpStatus === 400 || error.httpStatus === 401;
+
+    if (isTokenError && !options._retriedToken) {
+      try {
+        let freshToken = null;
+        try { freshToken = getToken({ allowEmpty: true }); } catch (_) {}
+
+        if (freshToken && freshToken !== token) {
+          console.log(`[graphGet] Token error (${error.message}), retrying with fresh disk token...`);
+          return await graphGet(edgeOrUrl, freshToken, cookieHeader, fields, limit, apiVersion, { ...options, _retriedToken: true });
+        }
+
+        if (AUTO_TOKEN_REFRESH) {
+          console.log(`[graphGet] Token error (${error.message}), triggering auto token refresh via Chromium...`);
+          const newToken = await ensureFreshToken({ forceRefresh: true, onProgress: options.onTokenRefresh });
+          return await graphGet(edgeOrUrl, newToken, cookieHeader, fields, limit, apiVersion, { ...options, _retriedToken: true });
+        }
+      } catch (refreshErr) {
+        console.error('[graphGet] Auto token refresh failed:', refreshErr.message);
+        throw refreshErr.isCheckpoint ? refreshErr : error;
+      }
+    }
+    throw error;
+  }
 }
 
 function normalizeComment(comment, depth, parentCommentId = null) {
@@ -85,10 +168,16 @@ function normalizeComment(comment, depth, parentCommentId = null) {
   };
 }
 
-async function fetchReplyPaging({ nextUrl, parentCommentId, comments, seen, stats, token, cookieHeader, limit, delayMs, apiVersion }) {
+function shouldStopCollection(rowCount, maxRows) {
+  return maxRows !== null && maxRows !== undefined && Number(maxRows) > 0 && rowCount >= Number(maxRows);
+}
+
+async function fetchReplyPaging({ nextUrl, parentCommentId, comments, seen, stats, token, cookieHeader, limit, delayMs, apiVersion, maxRows, options = {} }) {
   let url = nextUrl;
-  while (url) {
-    const data = await graphGet(url, token, cookieHeader, null, limit, apiVersion);
+  let currentToken = token;
+  while (url && !shouldStopCollection(comments.length, maxRows)) {
+    try { const diskToken = getToken({ allowEmpty: true }); if (diskToken) currentToken = diskToken; } catch (_) {}
+    const data = await graphGet(url, currentToken, cookieHeader, null, limit, apiVersion, options);
     stats.replyPages += 1;
     const replies = Array.isArray(data.data) ? data.data : [];
     for (const reply of replies) {
@@ -99,15 +188,16 @@ async function fetchReplyPaging({ nextUrl, parentCommentId, comments, seen, stat
       item.index = comments.length + 1;
       comments.push(item);
       stats.replyCount += 1;
+      if (shouldStopCollection(comments.length, maxRows)) break;
     }
     url = data.paging && data.paging.next || null;
     if (url) await sleep(delayMs);
   }
 }
 
-async function harvestComments({ postId, limit = DEFAULT_LIMIT, delayMs = DEFAULT_DELAY_MS, apiVersion = FB_API_VERSION, outBase, onProgress }) {
+async function harvestComments({ postId, limit = DEFAULT_LIMIT, delayMs = DEFAULT_DELAY_MS, apiVersion = FB_API_VERSION, outBase, maxRows = null, onProgress, onTokenRefresh }) {
   fs.mkdirSync(STATE_DIR, { recursive: true });
-  const token = getToken();
+  let currentToken = await getActiveToken({ onProgress: onTokenRefresh });
   const cookieHeader = getCookieHeader();
   const base = outBase || `comments_${postId}`;
   const outPath = path.join(STATE_DIR, `${safeName(base)}.json`);
@@ -121,7 +211,8 @@ async function harvestComments({ postId, limit = DEFAULT_LIMIT, delayMs = DEFAUL
   let nextUrl = `${encodeURIComponent(postId)}/comments`;
 
   while (nextUrl) {
-    const data = await graphGet(nextUrl, token, cookieHeader, fields, limit, apiVersion);
+    try { const diskToken = getToken({ allowEmpty: true }); if (diskToken) currentToken = diskToken; } catch (_) {}
+    const data = await graphGet(nextUrl, currentToken, cookieHeader, fields, limit, apiVersion, { onTokenRefresh });
     stats.topPages += 1;
     const pageItems = Array.isArray(data.data) ? data.data : [];
 
@@ -134,6 +225,7 @@ async function harvestComments({ postId, limit = DEFAULT_LIMIT, delayMs = DEFAUL
         comments.push(top);
         stats.topLevelCount += 1;
       }
+      if (shouldStopCollection(comments.length, maxRows)) break;
 
       if (c.comments && Array.isArray(c.comments.data)) {
         for (const reply of c.comments.data) {
@@ -144,18 +236,22 @@ async function harvestComments({ postId, limit = DEFAULT_LIMIT, delayMs = DEFAUL
           item.index = comments.length + 1;
           comments.push(item);
           stats.replyCount += 1;
+          if (shouldStopCollection(comments.length, maxRows)) break;
         }
+        if (shouldStopCollection(comments.length, maxRows)) break;
         if (c.comments.paging && c.comments.paging.next) {
           try {
-            await fetchReplyPaging({ nextUrl: c.comments.paging.next, parentCommentId: c.id || top.commentId, comments, seen, stats, token, cookieHeader, limit, delayMs, apiVersion });
+            await fetchReplyPaging({ nextUrl: c.comments.paging.next, parentCommentId: c.id || top.commentId, comments, seen, stats, token: currentToken, cookieHeader, limit, delayMs, apiVersion, maxRows, options: { onTokenRefresh } });
           } catch (error) {
             stats.errors.push({ parentCommentId: c.id || top.commentId, message: error.message, code: error.facebookError && error.facebookError.code });
           }
         }
       }
+      if (shouldStopCollection(comments.length, maxRows)) break;
     }
 
     const hasNext = Boolean(data.paging && data.paging.next);
+    const stoppedAtLimit = shouldStopCollection(comments.length, maxRows);
     const possibleCutoff = !hasNext && pageItems.length >= limit;
     const checkpoint = {
       sourcePostId: postId,
@@ -165,6 +261,8 @@ async function harvestComments({ postId, limit = DEFAULT_LIMIT, delayMs = DEFAUL
       encoding: 'UTF-8',
       ...stats,
       totalCommentCount: comments.length,
+      maxRows,
+      stoppedAtLimit,
       possiblePaginationCutoff: possibleCutoff,
       comments,
     };
@@ -176,12 +274,15 @@ async function harvestComments({ postId, limit = DEFAULT_LIMIT, delayMs = DEFAUL
         topLevelCount: stats.topLevelCount,
         replyCount: stats.replyCount,
         totalCommentCount: comments.length,
-        hasNextPage: hasNext,
+        hasNextPage: hasNext && !stoppedAtLimit,
         pageItems: pageItems.length,
+        maxRows,
+        stoppedAtLimit,
         possiblePaginationCutoff: possibleCutoff,
       });
     }
 
+    if (stoppedAtLimit) break;
     nextUrl = hasNext ? data.paging.next : null;
     if (nextUrl) await sleep(delayMs);
   }
@@ -194,30 +295,32 @@ async function harvestComments({ postId, limit = DEFAULT_LIMIT, delayMs = DEFAUL
     encoding: 'UTF-8',
     ...stats,
     totalCommentCount: comments.length,
+    maxRows,
+    stoppedAtLimit: shouldStopCollection(comments.length, maxRows),
     comments,
   };
   fs.writeFileSync(outPath, JSON.stringify(result, null, 2), 'utf8');
   return { result, outPath, checkpointPath };
 }
 
-async function checkFacebookSession() {
-  const token = getToken();
+async function checkFacebookSession(options = {}) {
+  const token = await getActiveToken({ onProgress: options.onTokenRefresh });
   const cookieHeader = getCookieHeader();
-  const data = await graphGet('me', token, cookieHeader, 'id,name', 25, FB_API_VERSION);
+  const data = await graphGet('me', token, cookieHeader, 'id,name', 25, FB_API_VERSION, options);
   return { ok: true, id: data.id || null, name: data.name || null };
 }
 
-async function fetchPostInfo(postId) {
-  const token = getToken();
+async function fetchPostInfo(postId, options = {}) {
+  const token = await getActiveToken({ onProgress: options.onTokenRefresh });
   const cookieHeader = getCookieHeader();
   const fieldSets = [
-    'id,from,description,title,created_time,permalink_url',
+    'id,from,message,description,title,created_time,permalink_url',
     'id,from,title,created_time,permalink_url',
     'id,from,created_time,permalink_url',
   ];
   let last = null;
   for (const fields of fieldSets) {
-    const data = await graphGet(postId, token, cookieHeader, fields, 25, FB_API_VERSION).catch(err => ({ error: err.facebookError || { message: err.message } }));
+    const data = await graphGet(postId, token, cookieHeader, fields, 25, FB_API_VERSION, options).catch(err => ({ error: err.facebookError || { message: err.message } }));
     last = data;
     if (!data.error) {
       fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.json`), JSON.stringify(data, null, 2), 'utf8');
@@ -228,4 +331,4 @@ async function fetchPostInfo(postId) {
   return { id: postId };
 }
 
-module.exports = { extractPostId, harvestComments, fetchPostInfo, checkFacebookSession };
+module.exports = { extractPostId, resolveInput, harvestComments, fetchPostInfo, checkFacebookSession, classifyFbError, getActiveToken };
