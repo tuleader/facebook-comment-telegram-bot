@@ -382,7 +382,7 @@ async function handleExportUrl(chatId, sourceUrl) {
       'Đang xuất Google Sheet...',
     ].filter(Boolean).join('\n')).catch(() => null);
 
-    const postInfo = await fetchPostInfo(postId);
+    const postInfo = await fetchPostInfo(postId, { sourceUrl: canonicalUrl });
     const workbook = buildWorkbook({ commentsResult: result, postInfo, sourceUrl: canonicalUrl, topLimit });
     const workbookPath = path.join(STATE_DIR, `comments_${postId}_workbook.json`);
     fs.writeFileSync(workbookPath, JSON.stringify(workbook, null, 2), 'utf8');

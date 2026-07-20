@@ -318,17 +318,75 @@ async function fetchPostInfo(postId, options = {}) {
     'id,from,title,created_time,permalink_url',
     'id,from,created_time,permalink_url',
   ];
+  const shortId = postId.includes('_') ? postId.split('_')[1] : null;
+  const ownerId = postId.includes('_') ? postId.split('_')[0] : null;
+  const candidateIds = Array.from(new Set([postId, shortId, ownerId].filter(Boolean)));
+
   let last = null;
-  for (const fields of fieldSets) {
-    const data = await graphGet(postId, token, cookieHeader, fields, 25, FB_API_VERSION, options).catch(err => ({ error: err.facebookError || { message: err.message } }));
-    last = data;
-    if (!data.error) {
-      fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.json`), JSON.stringify(data, null, 2), 'utf8');
-      return data;
+  for (const id of candidateIds) {
+    for (const fields of fieldSets) {
+      const data = await graphGet(id, token, cookieHeader, fields, 25, FB_API_VERSION, options).catch(err => ({ error: err.facebookError || { message: err.message } }));
+      last = data;
+      if (!data.error && (data.message || data.description || data.title || data.from)) {
+        const info = { ...data, id: postId, sourcePostId: postId };
+        fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.json`), JSON.stringify(info, null, 2), 'utf8');
+        return info;
+      }
     }
   }
+
+  if (shortId) {
+    for (const fields of fieldSets) {
+      const batchData = await graphGet(`?ids=${postId},${shortId}`, token, cookieHeader, fields, 25, FB_API_VERSION, options).catch(() => null);
+      if (batchData && !batchData.error && typeof batchData === 'object') {
+        const found = batchData[postId] || batchData[shortId];
+        if (found && !found.error && (found.message || found.description || found.title || found.from)) {
+          const info = { ...found, id: postId, sourcePostId: postId };
+          fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.json`), JSON.stringify(info, null, 2), 'utf8');
+          return info;
+        }
+      }
+    }
+  }
+
+  let fallbackInfo = { id: postId };
+  try {
+    const urlToFetch = options.sourceUrl || (shortId && ownerId ? `https://www.facebook.com/${ownerId}/posts/${shortId}` : `https://www.facebook.com/${postId}`);
+    const res = await fetch(urlToFetch, {
+      headers: {
+        Cookie: cookieHeader,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+      redirect: 'follow',
+    });
+    const html = await res.text();
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const ogTitleMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
+    const ogDescMatch = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i) || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:description["']/i);
+
+    let scrapedTitle = ogTitleMatch?.[1] || titleMatch?.[1] || '';
+    let scrapedDesc = ogDescMatch?.[1] || '';
+    if (scrapedTitle) {
+      scrapedTitle = scrapedTitle.replace(/\s*\|.*$/, '').replace(/^[^-]+-\s*/, '').trim();
+    }
+    if (scrapedDesc || scrapedTitle) {
+      fallbackInfo = {
+        id: postId,
+        title: scrapedTitle || scrapedDesc,
+        description: scrapedDesc,
+        message: scrapedDesc || scrapedTitle,
+        permalink_url: res.url || urlToFetch,
+        from: { name: (titleMatch?.[1] || '').split('-')[0].trim() || '' },
+      };
+      fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.json`), JSON.stringify(fallbackInfo, null, 2), 'utf8');
+      return fallbackInfo;
+    }
+  } catch (_) {}
+
+  if (last && !last.error) return { ...last, id: postId };
   fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.error.json`), JSON.stringify(last, null, 2), 'utf8');
-  return { id: postId };
+  return fallbackInfo;
 }
 
 module.exports = { extractPostId, resolveInput, harvestComments, fetchPostInfo, checkFacebookSession, classifyFbError, getActiveToken };
