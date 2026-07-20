@@ -310,6 +310,20 @@ async function checkFacebookSession(options = {}) {
   return { ok: true, id: data.id || null, name: data.name || null };
 }
 
+function decodeHTMLEntities(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&apos;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 async function fetchPostInfo(postId, options = {}) {
   const token = await getActiveToken({ onProgress: options.onTokenRefresh });
   const cookieHeader = getCookieHeader();
@@ -361,30 +375,30 @@ async function fetchPostInfo(postId, options = {}) {
       redirect: 'follow',
     });
     const html = await res.text();
-    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
     const ogTitleMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
     const ogDescMatch = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i) || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:description["']/i);
 
-    let scrapedTitle = ogTitleMatch?.[1] || titleMatch?.[1] || '';
-    let scrapedDesc = ogDescMatch?.[1] || '';
-    if (scrapedTitle) {
-      scrapedTitle = scrapedTitle.replace(/\s*\|.*$/, '').replace(/^[^-]+-\s*/, '').trim();
-    }
-    if (scrapedDesc || scrapedTitle) {
+    let rawDesc = decodeHTMLEntities(ogDescMatch?.[1] || '');
+    let rawTitle = decodeHTMLEntities(titleMatch?.[1] || ogTitleMatch?.[1] || '');
+    let rawAuthor = decodeHTMLEntities(ogTitleMatch?.[1] || (titleMatch?.[1] || '').split(' - ').slice(-1)[0] || '');
+
+    const postText = rawDesc || (rawTitle.includes(' - ') ? rawTitle.split(' - ')[0].trim() : rawTitle) || '';
+    if (postText || rawAuthor) {
       fallbackInfo = {
         id: postId,
-        title: scrapedTitle || scrapedDesc,
-        description: scrapedDesc,
-        message: scrapedDesc || scrapedTitle,
+        title: postText || rawAuthor || postId,
+        description: rawDesc,
+        message: postText || rawAuthor || postId,
         permalink_url: res.url || urlToFetch,
-        from: { name: (titleMatch?.[1] || '').split('-')[0].trim() || '' },
+        from: { name: rawAuthor },
       };
       fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.json`), JSON.stringify(fallbackInfo, null, 2), 'utf8');
       return fallbackInfo;
     }
   } catch (_) {}
 
-  if (last && !last.error) return { ...last, id: postId };
+  if (last && !last.error && (last.message || last.description || last.title || last.from)) return { ...last, id: postId };
   fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.error.json`), JSON.stringify(last, null, 2), 'utf8');
   return fallbackInfo;
 }

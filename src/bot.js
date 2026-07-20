@@ -405,6 +405,7 @@ async function handleExportUrl(chatId, sourceUrl) {
     await editMessage(chatId, statusMsg.message_id, [
       'Xong rồi ✅',
       `Post: ${postId}`,
+      `Content: ${workbook.title}`,
       `Tổng comment/reply: ${result.totalCommentCount}`,
       `Comment gốc: ${result.topLevelCount}`,
       `Reply: ${result.replyCount}`,
