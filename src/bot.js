@@ -337,22 +337,48 @@ async function handleExportUrl(chatId, sourceUrl) {
   currentJob = postId;
   fs.mkdirSync(STATE_DIR, { recursive: true });
   const statusMsg = await sendMessage(chatId, [
-    `Bắt đầu lấy comment postId=${postId}`,
+    `Bắt đầu xử lý postId=${postId}`,
     sourceType !== 'unknown' ? `Loại: ${sourceType}` : '',
     topLimit ? `Sẽ thêm tab top_${topLimit}_tuong_tac` : '',
     maxRows ? `Giới hạn: ${maxRows} dòng` : '',
-    'Đang crawl...',
+    '[1/3] Đang lấy thông tin bài viết...',
   ].filter(Boolean).join('\n'));
   let lastProgressAt = 0;
 
   try {
+    // Bước 1: Lấy nội dung bài viết riêng
+    let postInfo = { id: postId };
+    try {
+      postInfo = await fetchPostInfo(postId, {
+        sourceUrl: canonicalUrl,
+        onTokenRefresh: async info => {
+          await editMessage(chatId, statusMsg.message_id, [
+            `⏳ ${info.message}`,
+            `[1/3] Đang lấy thông tin bài viết postId=${postId}`,
+          ].join('\n')).catch(() => null);
+        },
+      });
+    } catch (_) {}
+
+    const rawTitleText = postInfo.message || postInfo.story || postInfo.description || postInfo.title || canonicalUrl || postId;
+    const compactPostTitle = String(rawTitleText).replace(/\r?\n|\r/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100);
+
+    await editMessage(chatId, statusMsg.message_id, [
+      `[1/3] Đã lấy xong thông tin bài viết ✅`,
+      `Post: ${postId}`,
+      `Content: ${compactPostTitle}`,
+      '',
+      `[2/3] Đang lấy bình luận (comments)...`,
+    ].join('\n')).catch(() => null);
+
+    // Bước 2: Lấy bình luận (comments) riêng
     const { result, outPath } = await harvestComments({
       postId,
       maxRows,
       onTokenRefresh: async info => {
         await editMessage(chatId, statusMsg.message_id, [
           `⏳ ${info.message}`,
-          `Đang xử lý postId=${postId}`,
+          `[2/3] Đang xử lý comments postId=${postId}`,
         ].join('\n')).catch(() => null);
       },
       onProgress: async p => {
@@ -361,7 +387,8 @@ async function handleExportUrl(chatId, sourceUrl) {
         if (!shouldUpdate) return;
         lastProgressAt = now;
         await editMessage(chatId, statusMsg.message_id, [
-          `Đang crawl postId=${postId}`,
+          `[2/3] Đang lấy bình luận postId=${postId}`,
+          `Content: ${compactPostTitle}`,
           `- Page: ${p.topPages}`,
           `- Comment gốc: ${p.topLevelCount}`,
           `- Reply: ${p.replyCount}`,
@@ -374,15 +401,16 @@ async function handleExportUrl(chatId, sourceUrl) {
     });
 
     await editMessage(chatId, statusMsg.message_id, [
-      `Crawl xong postId=${postId}`,
+      `[2/3] Đã lấy xong bình luận ✅`,
+      `Content: ${compactPostTitle}`,
       `- Comment gốc: ${result.topLevelCount}`,
       `- Reply: ${result.replyCount}`,
       `- Tổng: ${result.totalCommentCount}`,
       result.stoppedAtLimit ? `- Đã dừng theo giới hạn: ${result.maxRows} dòng` : '',
-      'Đang xuất Google Sheet...',
+      '',
+      '[3/3] Đang xuất Google Sheet...',
     ].filter(Boolean).join('\n')).catch(() => null);
 
-    const postInfo = await fetchPostInfo(postId, { sourceUrl: canonicalUrl });
     const workbook = buildWorkbook({ commentsResult: result, postInfo, sourceUrl: canonicalUrl, topLimit });
     const workbookPath = path.join(STATE_DIR, `comments_${postId}_workbook.json`);
     fs.writeFileSync(workbookPath, JSON.stringify(workbook, null, 2), 'utf8');
