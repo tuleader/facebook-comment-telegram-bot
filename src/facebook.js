@@ -55,7 +55,9 @@ function buildUrl(edgeOrUrl, token, fields, limit, apiVersion) {
 
   url.searchParams.set('access_token', token);
   if (fields && !url.searchParams.has('fields')) url.searchParams.set('fields', fields);
-  if (!url.searchParams.has('limit')) url.searchParams.set('limit', String(limit));
+  if (limit && limit > 0 && !url.searchParams.has('limit') && (edgeOrUrl.includes('/') || edgeOrUrl.includes('?'))) {
+    url.searchParams.set('limit', String(limit));
+  }
   url.searchParams.set('debug', 'all');
   url.searchParams.set('format', 'json');
   url.searchParams.set('method', 'get');
@@ -328,8 +330,9 @@ async function fetchPostInfo(postId, options = {}) {
   const token = await getActiveToken({ onProgress: options.onTokenRefresh });
   const cookieHeader = getCookieHeader();
   const fieldSets = [
-    'id,from,message,description,title,created_time,permalink_url',
-    'id,from,title,created_time,permalink_url',
+    '',
+    'id,from,message,created_time,permalink_url',
+    'id,from,message,story,created_time,permalink_url',
     'id,from,created_time,permalink_url',
   ];
   const shortId = postId.includes('_') ? postId.split('_')[1] : null;
@@ -341,7 +344,7 @@ async function fetchPostInfo(postId, options = {}) {
     for (const fields of fieldSets) {
       const data = await graphGet(id, token, cookieHeader, fields, 25, FB_API_VERSION, options).catch(err => ({ error: err.facebookError || { message: err.message } }));
       last = data;
-      if (!data.error && (data.message || data.description || data.title || data.from)) {
+      if (!data.error && (data.message || data.story || data.description || data.title)) {
         const info = { ...data, id: postId, sourcePostId: postId };
         fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.json`), JSON.stringify(info, null, 2), 'utf8');
         return info;
@@ -354,7 +357,7 @@ async function fetchPostInfo(postId, options = {}) {
       const batchData = await graphGet(`?ids=${postId},${shortId}`, token, cookieHeader, fields, 25, FB_API_VERSION, options).catch(() => null);
       if (batchData && !batchData.error && typeof batchData === 'object') {
         const found = batchData[postId] || batchData[shortId];
-        if (found && !found.error && (found.message || found.description || found.title || found.from)) {
+        if (found && !found.error && (found.message || found.story || found.description || found.title)) {
           const info = { ...found, id: postId, sourcePostId: postId };
           fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.json`), JSON.stringify(info, null, 2), 'utf8');
           return info;
@@ -398,7 +401,19 @@ async function fetchPostInfo(postId, options = {}) {
     }
   } catch (_) {}
 
-  if (last && !last.error && (last.message || last.description || last.title || last.from)) return { ...last, id: postId };
+  if (last && !last.error) {
+    const combined = {
+      ...last,
+      id: postId,
+      title: fallbackInfo.title || last.title || last.story || last.message || postId,
+      message: fallbackInfo.message || last.message || last.story || last.title || postId,
+      description: fallbackInfo.description || last.description || '',
+      from: last.from || fallbackInfo.from || {},
+      permalink_url: last.permalink_url || fallbackInfo.permalink_url || `https://www.facebook.com/${postId}`
+    };
+    fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.json`), JSON.stringify(combined, null, 2), 'utf8');
+    return combined;
+  }
   fs.writeFileSync(path.join(STATE_DIR, `post_info_${postId}.error.json`), JSON.stringify(last, null, 2), 'utf8');
   return fallbackInfo;
 }
