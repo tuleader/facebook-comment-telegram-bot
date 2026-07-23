@@ -70,10 +70,22 @@ function saveCookieJar(jar) {
   const backup = backupIfExists(COOKIE_PATH, 'facebook_cookie');
   fs.writeFileSync(COOKIE_PATH, JSON.stringify(validJar, null, 2), { encoding: 'utf8', mode: 0o600 });
   fs.chmodSync(COOKIE_PATH, 0o600);
+  
+  // Xóa token cũ khi update cookies mới để bot tự lấy lại token
+  let tokenCleared = false;
+  if (fs.existsSync(TOKEN_PATH)) {
+    backupIfExists(TOKEN_PATH, 'facebook_token_before_cookie_update');
+    try {
+      fs.unlinkSync(TOKEN_PATH);
+      tokenCleared = true;
+    } catch (_) {}
+  }
+
   return {
     cookieCount: validJar.cookies.length,
     c_user: validJar.cookies.find(c => c.name === 'c_user')?.value || null,
     backup,
+    tokenCleared
   };
 }
 

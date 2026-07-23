@@ -227,7 +227,7 @@ async function saveCookieFromMessage(chatId, message, text = '') {
     if (!cookieText) throw new Error('Cần gửi file cookie JSON hoặc cookie header text dạng `sb=...; c_user=...; xs=...`.');
     result = storage.saveCookieText(cookieText);
   }
-  await sendMessage(chatId, `Đã lưu cookies ✅\n- Số cookie: ${result.cookieCount}\n- c_user: ${result.c_user}\n\n👉 Bạn có thể gửi lệnh 'get_cmt <URL>' ngay bây giờ (bot sẽ tự động trích xuất access token từ AdsManager qua Chromium).`);
+  await sendMessage(chatId, `Đã lưu cookies ✅\n- Số cookie: ${result.cookieCount}\n- c_user: ${result.c_user}${result.tokenCleared ? '\\n- Xóa token cũ thành công' : ''}\n\n👉 Bạn có thể gửi lệnh 'get_cmt <URL>' ngay bây giờ (bot sẽ tự động trích xuất access token từ AdsManager qua Chromium).`);
 }
 
 async function saveTokenFromText(chatId, tokenText) {
