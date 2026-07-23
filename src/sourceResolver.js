@@ -17,7 +17,7 @@
 const { getCookieHeader } = require('./storage');
 
 const FACEBOOK_HOSTS = new Set([
-  'facebook.com', 'www.facebook.com', 'web.facebook.com', 'm.facebook.com',
+  'facebook.com', 'www.facebook.com', 'web.facebook.com', 'm.facebook.com', 'fb.watch'
 ]);
 const TEXT_POST_ID_PATTERN = /^pfbid[0-9A-Za-z]+$/;
 const NUMERIC_GRAPH_TARGET_PATTERN = /^\d{8,}(?:_\d{8,})?$/;
@@ -44,6 +44,7 @@ const OWNER_ID_PATTERNS = [
 function isFacebookShareUrl(input) {
   try {
     const url = new URL(String(input || '').trim());
+    if (url.hostname === 'fb.watch') return true;
     return FACEBOOK_HOSTS.has(url.hostname) && url.pathname.startsWith('/share/');
   } catch (_) {
     return false;
@@ -100,6 +101,8 @@ function resolveFacebookSource(input) {
   let url;
   try { url = new URL(value); } catch (_) { return { ok: false, reason: 'UNSUPPORTED_URL' }; }
   if (!FACEBOOK_HOSTS.has(url.hostname)) return { ok: false, reason: 'UNSUPPORTED_URL' };
+  
+  if (url.hostname === 'fb.watch') return { ok: false, reason: 'TARGET_ID_NOT_FOUND' };
   if (url.pathname.startsWith('/share/')) return { ok: false, reason: 'TARGET_ID_NOT_FOUND' };
 
   const videoMatch = url.pathname.match(/\/videos\/(\d+)/);
