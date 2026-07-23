@@ -92,9 +92,16 @@ Ghi chú:
 
 ## 4. Chạy Docker
 
-Build và chạy nền:
+Build và chạy nền (lần đầu):
 
 ```bash
+docker compose up -d --build
+```
+
+Khi có bản cập nhật code mới, kéo code về và build lại:
+
+```bash
+git pull
 docker compose up -d --build
 ```
 
